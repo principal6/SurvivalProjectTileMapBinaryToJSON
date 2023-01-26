@@ -8,7 +8,8 @@
 #include <variant>
 
 
-#define ASSERT(expression) if ((expression) == false) { ::MessageBoxA(nullptr, "Assertion failed!", "ASSERT", MB_OK); std::cout << "Assertion Failed in File: " << __FILE__ << " Line:" << __LINE__; ::DebugBreak; }
+#define ASSERT(expression) if ((expression) == false) { ::MessageBoxA(nullptr, "Assertion failed!", "ASSERT", MB_OK); std::cout << "Assertion Failed in File: " << __FILE__ << " Line:" << __LINE__ << "\n"; ::DebugBreak(); }
+#define STRING_AND_NAME(var) #var, var
 
 
 using uint8 = uint8_t;
@@ -44,11 +45,22 @@ class BinaryParser
 public:
 	BinaryParser(const BinaryFile& binaryFile) : _binaryFile{ binaryFile } { __noop; }
 	template<typename T>
-	T readBinary()
+	T read()
 	{
 		const uint64 at = _at;
 		_at += sizeof(T);
 		return *reinterpret_cast<const T*>(&_binaryFile._bytes[at]);
+	}
+	template<typename T>
+	const T* read(uint64 count)
+	{
+		const uint64 at = _at;
+		_at += sizeof(T) * count;
+		return reinterpret_cast<const T*>(&_binaryFile._bytes[at]);
+	}
+	bool can_read(uint64 count) const
+	{
+		return _at + count <= _binaryFile._bytes.size();
 	}
 private:
 	const BinaryFile& _binaryFile;
@@ -103,14 +115,21 @@ public:
 	JSONValueID getRootJSONValueID() const { return _jsonValues[0]._ID; }
 	JSONValueID createJSONValue(const JSONValueID& parentID, const std::string& name, const JSONValueType type)
 	{
-		if (_nameChecker.find(name) != _nameChecker.end())
+		JSONValue& parentJSONValue = getJSONValue(parentID);
+		if (name.empty() == false && parentJSONValue._childIDs.empty() == false)
 		{
-			ASSERT(false);
-			return getRootJSONValueID();
+			for (const JSONValueID& childID : parentJSONValue._childIDs)
+			{
+				const JSONValue& child = getJSONValue(childID);
+				if (child._name == name)
+				{
+					ASSERT(false);
+					return getRootJSONValueID();
+				}
+			}
 		}
 		JSONValue jsonValue;
 		{
-			JSONValue& parentJSONValue = getJSONValue(parentID);
 			jsonValue._name = name;
 			jsonValue._type = type;
 			jsonValue._ID._raw = _jsonValues.size();
@@ -143,11 +162,23 @@ public:
 		string buffer;
 		ofstream ofs{ _fileName };
 		ASSERT(ofs.is_open());
-		save_write_JSONValue(ofs, getRootJSONValueID());
+		writeJSONValue(ofs, getRootJSONValueID());
 	}
 
 private:
-	void save_write_JSONValue(std::ofstream& ofs, const JSONValueID& id) const
+	void writeJSONValue_processEscape(std::string& value) const
+	{
+		int32 at = static_cast<int32>(value.size()) - 1;
+		while (at > 0)
+		{
+			if (value[at] == '\\' && (at == 0 || value[at - 1] != '\\'))
+			{
+				value.insert(value.begin() + at, '\\');
+			}
+			--at;
+		}
+	}
+	void writeJSONValue(std::ofstream& ofs, const JSONValueID& id) const
 	{
 		using namespace std;
 		const JSONValue& jsonValue = getJSONValue(id);
@@ -187,6 +218,7 @@ private:
 			buffer = get<string>(jsonValue._value);
 			if (buffer.empty() == false)
 			{
+				writeJSONValue_processEscape(buffer);
 				ofs.put('\"');
 				ofs.write(buffer.c_str(), buffer.size());
 				ofs.put('\"');
@@ -206,7 +238,7 @@ private:
 
 		for (const JSONValueID& childID : jsonValue._childIDs)
 		{
-			save_write_JSONValue(ofs, childID);
+			writeJSONValue(ofs, childID);
 		}
 
 		if (jsonValue._type == JSONValueType::Object || jsonValue._type == JSONValueType::Array)
@@ -240,7 +272,6 @@ private:
 private:
 	std::string _fileName;
 	std::vector<JSONValue> _jsonValues;
-	std::unordered_map<std::string, bool> _nameChecker;
 };
 
 
@@ -264,46 +295,153 @@ int main()
 
 		const BinaryFile binaryFile{ mapFileName };
 		BinaryParser binaryParser{ binaryFile };
-		const int32 mapTypeOrMapWidth = binaryParser.readBinary<int32>();
-		ASSERT(mapTypeOrMapWidth == -1);
+		const int32 map_type_or_map_width = binaryParser.read<int32>();
+		ASSERT(map_type_or_map_width == -1);
 
-		const int32 tileWidth = binaryParser.readBinary<int32>();
-		const int32 tileHeight = binaryParser.readBinary<int32>();
-		const int32 mapWidth = binaryParser.readBinary<int32>();
-		const int32 mapHeight = binaryParser.readBinary<int32>();
-		const int32 unknownWidth = binaryParser.readBinary<int32>();
-		const int32 unknownHeight = binaryParser.readBinary<int32>();
-		const int16 tileCount = binaryParser.readBinary<int16>();
-		const int16 layerCount = binaryParser.readBinary<int16>();
-		const int16 mapUnknown0 = binaryParser.readBinary<int16>();
-		const int16 minimapFileCount = binaryParser.readBinary<int16>();
-		const int16 mapUnknown1 = binaryParser.readBinary<int16>();
-		const int16 mapUnknown2 = binaryParser.readBinary<int16>();
+		const int32 tile_width = binaryParser.read<int32>();
+		const int32 tile_height = binaryParser.read<int32>();
+		const int32 map_width = binaryParser.read<int32>();
+		const int32 map_height = binaryParser.read<int32>();
+		const int32 unknown_width = binaryParser.read<int32>();
+		const int32 unknown_height = binaryParser.read<int32>();
+		const int16 tile_count = binaryParser.read<int16>();
+		const int16 layer_count = binaryParser.read<int16>();
+		const int16 map_unknown_0 = binaryParser.read<int16>();
+		const int16 minimap_file_count = binaryParser.read<int16>();
+		const int16 map_unknown_1 = binaryParser.read<int16>();
+		const int16 map_unknown_2 = binaryParser.read<int16>();
 
-#define STRING_AND_VARIABLE(valueWithName) #valueWithName, valueWithName
 		JSONFile jsonFile{ "map.json" };
 		{
 			const JSONValueID metaDataID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "meta_data", JSONValueType::Object);
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(mapTypeOrMapWidth));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(tileWidth));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(tileHeight));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(mapWidth));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(mapHeight));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(unknownWidth));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(unknownHeight));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(tileCount));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(layerCount));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(mapUnknown0));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(minimapFileCount));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(mapUnknown1));
-			jsonFile.pushNameValuePair(metaDataID, STRING_AND_VARIABLE(mapUnknown2));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(map_type_or_map_width));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(tile_width));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(tile_height));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(map_width));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(map_height));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(unknown_width));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(unknown_height));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(tile_count));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(layer_count));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(map_unknown_0));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(minimap_file_count));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(map_unknown_1));
+			jsonFile.pushNameValuePair(metaDataID, STRING_AND_NAME(map_unknown_2));
 		}
 		{
 			const JSONValueID tileFileNamesID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "tile_filenames", JSONValueType::Array);
-			//jsonFile.pushNameValuePairObject(tileFileNamesID, "fileName", "TEST0.bmp");
-			//jsonFile.pushNameValuePairObject(tileFileNamesID, "fileName", "TEST1.bmp");
-			jsonFile.pushValue(tileFileNamesID, "TEST0.bmp");
-			jsonFile.pushValue(tileFileNamesID, "TEST1.bmp");
+			for (int16 tileIndex = 0; tileIndex < tile_count; ++tileIndex)
+			{
+				const char* const tileFileName = binaryParser.read<char>(MAX_PATH);
+				jsonFile.pushValue(tileFileNamesID, tileFileName);
+			}
+		}
+		{
+			const JSONValueID layerFileNamesID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "layer_filenames", JSONValueType::Array);
+			for (int16 layerIndex = 0; layerIndex < layer_count; ++layerIndex)
+			{
+				const char* const layerFileName = binaryParser.read<char>(MAX_PATH);
+				jsonFile.pushValue(layerFileNamesID, layerFileName);
+			}
+		}
+		{
+			const JSONValueID layerColorKeysID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "layer_colorkeys", JSONValueType::Array);
+			for (int16 layerIndex = 0; layerIndex < layer_count; ++layerIndex)
+			{
+				const int32 colorKey = binaryParser.read<int32>();
+				jsonFile.pushValue(layerColorKeysID, colorKey);
+			}
+		}
+		{
+			const JSONValueID minimapFileNamesID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "minimap_filenames", JSONValueType::Array);
+			for (int16 minimapFileIndex = 0; minimapFileIndex < minimap_file_count; ++minimapFileIndex)
+			{
+				const char* const minimapFileName = binaryParser.read<char>(MAX_PATH);
+				jsonFile.pushValue(minimapFileNamesID, minimapFileName);
+			}
+		}
+		{
+			const JSONValueID mapAreasID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "map_areas", JSONValueType::Array);
+			const int32 mapAreaCount = binaryParser.read<int32>();
+			for (int32 mapAreaIndex = 0; mapAreaIndex < mapAreaCount; ++mapAreaIndex)
+			{
+				const int32 area_type = binaryParser.read<int32>();
+				const int32 x0 = binaryParser.read<int32>();
+				const int32 y0 = binaryParser.read<int32>();
+				const int32 x1 = binaryParser.read<int32>();
+				const int32 y1 = binaryParser.read<int32>();
+
+				const JSONValueID mapAreaID = jsonFile.createJSONValue(mapAreasID, "", JSONValueType::Object);
+				jsonFile.pushNameValuePair(mapAreaID, STRING_AND_NAME(area_type));
+				jsonFile.pushNameValuePair(mapAreaID, STRING_AND_NAME(x0));
+				jsonFile.pushNameValuePair(mapAreaID, STRING_AND_NAME(y0));
+				jsonFile.pushNameValuePair(mapAreaID, STRING_AND_NAME(x1));
+				jsonFile.pushNameValuePair(mapAreaID, STRING_AND_NAME(y1));
+			}
+		}
+		{
+			const JSONValueID placedTilesID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "placed_tiles", JSONValueType::Array);
+			const int32 placedTileCount = binaryParser.read<int32>();
+			for (int32 placedTileIndex = 0; placedTileIndex < placedTileCount; ++placedTileIndex)
+			{
+				const int32 x = binaryParser.read<int32>();
+				const int32 y = binaryParser.read<int32>();
+				const int32 tile_index = binaryParser.read<int32>();
+
+				const JSONValueID placedTileID = jsonFile.createJSONValue(placedTilesID, "", JSONValueType::Object);
+				jsonFile.pushNameValuePair(placedTileID, STRING_AND_NAME(x));
+				jsonFile.pushNameValuePair(placedTileID, STRING_AND_NAME(y));
+				jsonFile.pushNameValuePair(placedTileID, STRING_AND_NAME(tile_index));
+			}
+		}
+		{
+			const JSONValueID placedLayersID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "placed_layers", JSONValueType::Array);
+			const int32 placedLayerCount = binaryParser.read<int32>();
+			for (int32 placedLayerIndex = 0; placedLayerIndex < placedLayerCount; ++placedLayerIndex)
+			{
+				const int32 x = binaryParser.read<int32>();
+				const int32 y = binaryParser.read<int32>();
+				const int16 unknown_0 = binaryParser.read<int16>();
+				const int16 unknown_1 = binaryParser.read<int16>();
+				const int16 unknown_2 = binaryParser.read<int16>();
+				const int16 unknown_3 = binaryParser.read<int16>();
+				const int32 unknown_4 = binaryParser.read<int32>();
+				const int16 layer_index = binaryParser.read<int16>();
+				const uint8 unknown_5 = binaryParser.read<uint8>();
+				const uint8 unknown_6 = binaryParser.read<uint8>();
+				const int32 unknown_7 = binaryParser.read<int32>();
+				const int32 unknown_8 = binaryParser.read<int32>();
+				const int32 unknown_9 = binaryParser.read<int32>();
+				const int32 unknown_10 = binaryParser.read<int32>();
+				const int32 unknown_11 = binaryParser.read<int32>();
+				const int32 unknown_12 = binaryParser.read<int32>();
+
+				const JSONValueID placedLayerID = jsonFile.createJSONValue(placedLayersID, "", JSONValueType::Object);
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(x));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(y));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_0));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_1));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_2));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_3));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_4));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(layer_index));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_5));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_6));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_7));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_8));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_9));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_10));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_11));
+				jsonFile.pushNameValuePair(placedLayerID, STRING_AND_NAME(unknown_12));
+			}
+		}
+		{
+			const JSONValueID unknownValuesID = jsonFile.createJSONValue(jsonFile.getRootJSONValueID(), "unknown_values", JSONValueType::Array);
+			while (binaryParser.can_read(4))
+			{
+				const int32 unknown_value = binaryParser.read<int32>();
+				jsonFile.pushValue(unknownValuesID, unknown_value);
+			}
 		}
 		jsonFile.save();
 		break;
